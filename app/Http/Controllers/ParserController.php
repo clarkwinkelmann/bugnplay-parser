@@ -8,8 +8,11 @@
 
 use Exception;
 use GuzzleHttp\Client;
+use GuzzleHttp\Exception\RequestException;
 use Illuminate\Contracts\Cache\Repository as Cache;
 use Illuminate\Contracts\Filesystem\Filesystem as Storage;
+use Illuminate\Contracts\Logging\Log;
+use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
 use Illuminate\Support\Collection;
 use stdClass;
@@ -17,9 +20,10 @@ use Symfony\Component\DomCrawler\Crawler;
 
 class ParserController extends Controller {
 
-	public function __construct(Cache $cache, Storage $storage) {
-		$this->cache = $cache;
+	public function __construct(Cache $cache, Storage $storage, Log $log) {
+		$this->cache   = $cache;
 		$this->storage = $storage;
+		$this->log     = $log;
 
 		/**
 		 * Array of technologies ids and matching words
@@ -36,9 +40,10 @@ class ParserController extends Controller {
 			'photostage' => ['photostage'],
 			'iphoto' => ['iphoto'],
 			'inkscape' => ['inkscape'],
-			'adobe-flash' => ['adobe flash', 'flash cs', 'actionscript'],
+			'adobe-flash' => ['adobe flash', 'flash cs', 'actionscript', 'macromedia flash', 'animato flash', 'mx 2004 version 7.1', 'flashanim', 'réalisé en flash'],
 			'adobe-illustrator' => ['adobe illustrator'], // Adobe InDesign ?
 			'graphicsgale' => ['graphicsgale'], // or video editor
+			'paintshop-pro' => ['paintshop', 'paint shop'],
 
 			// Game/3D engines
 			'blender' => ['blender'],
@@ -70,6 +75,7 @@ class ParserController extends Controller {
 			'fraps' => ['fraps'],
 			'quicktime' => ['quicktime', 'quick time'],
 			'zu3d' => ['zu3d'],
+			'ulead-videostudio' => ['ulead videostudio', 'ulead video studio'],
 
 			// Programming environments
 			'scratch' => ['scratch'],
@@ -232,22 +238,21 @@ class ParserController extends Controller {
 
 	/**
 	 * Does the actual parsing
+	 * @param Request $request
 	 * @param boolean $with_analysis Whether to add additional keys with analysed data
 	 * @return Collection
 	 */
-	public function parse($with_analysis = false)
+	public function parse(Request $request, $with_analysis = false)
 	{
-		$years = [
-			2015,
-			2014,
-			2013,
-		];
+		$years = explode(',', $request->get('years', '2015'));
 
 		$projects = new Collection();
 
 		$postal_codes = $this->postalCodes();
 
-		foreach($years as $year) {
+		foreach($years as $year_raw) {
+			$year = intval($year_raw);
+
 			/**
 			 * The projects page will give the list of projects and basic information
 			 */
@@ -319,28 +324,34 @@ class ParserController extends Controller {
 				 * Project cover image
 				 * Get the small one from the listing to keep things small
 				 */
-				$cover_image_raw_url = $node->filter('img')->attr('src');
-				$cover_image_url = (substr($cover_image_raw_url, 0, 1) == '/' ? 'http://www.bugnplay.ch' : '') . $cover_image_raw_url;
-				// We could save the image in base64 but this is far too heavy
-				// so let's store the link to the one on bugnplay server
-				/*$image_data = $this->fetchUrl($cover_image_url);
-				$image_ext = null;
-				switch(true) {
-					case str_contains($cover_image_url, '.jpg'):
-					case str_contains($cover_image_url, '.jpeg'):
-						$image_ext = 'jpeg';
-						break;
-					case str_contains($cover_image_url, '.png'):
-						$image_ext = 'png';
-						break;
-					case str_contains($cover_image_url, '.gif'):
-						$image_ext = 'gif';
-						break;
-					default:
-						throw new Exception('Invalid image ext "' . $cover_image_url . '"');
+				$cover_image_node = $node->filter('img');
+				// Some projects from 2007 don't have any image
+				if($cover_image_node->count()) {
+					$cover_image_raw_url = $node->filter('img')->attr('src');
+					$cover_image_url = (substr($cover_image_raw_url, 0, 1) == '/' ? 'http://www.bugnplay.ch' : '') . $cover_image_raw_url;
+					// We could save the image in base64 but this is far too heavy
+					// so let's store the link to the one on bugnplay server
+					/*$image_data = $this->fetchUrl($cover_image_url);
+					$image_ext = null;
+					switch(true) {
+						case str_contains($cover_image_url, '.jpg'):
+						case str_contains($cover_image_url, '.jpeg'):
+							$image_ext = 'jpeg';
+							break;
+						case str_contains($cover_image_url, '.png'):
+							$image_ext = 'png';
+							break;
+						case str_contains($cover_image_url, '.gif'):
+							$image_ext = 'gif';
+							break;
+						default:
+							throw new Exception('Invalid image ext "' . $cover_image_url . '"');
+					}
+					$project->cover_image = 'data:image/' . $image_ext . ';base64,' . base64_encode($image_data);*/
+					$project->cover_image = $cover_image_url;
+				} else {
+					$project->cover_image = null;
 				}
-				$project->cover_image = 'data:image/' . $image_ext . ';base64,' . base64_encode($image_data);*/
-				$project->cover_image = $cover_image_url;
 
 				/**
 				 * For the details we need to get the project page
@@ -348,7 +359,15 @@ class ParserController extends Controller {
 				switch($bnp_version) {
 					case 1:
 						$project_page_url = 'http://projects.bugnplay.ch/bugnplay/library/project.php?project=' . $id;
-						$project_page = new Crawler($this->fetchUrl($project_page_url), 'http://projects.bugnplay.ch/');
+						try {
+							// Full path is required for media links to be complete
+							$project_page = new Crawler($this->fetchUrl($project_page_url), 'http://projects.bugnplay.ch/bugnplay/library/project.php');
+						} catch(RequestException $e) {
+							$this->log->warning('Error fetching project ' . $project->uid . ' at ' . $project_page_url . '. Guzzle error: ' . $e->getMessage());
+							return; // Go on to the next project without adding it to the list
+						}
+
+						$project->url = $project_page_url;
 
 						/**
 						 * Project description
@@ -377,20 +396,31 @@ class ParserController extends Controller {
 								$project->type = 'matu';
 								break;
 							default:
-								throw new Exception('Invalid project type "' . $category_text . '"');
+								// Projects from 2007 don't have any type
+								$project->type = null;
+								//throw new Exception('Invalid project type "' . $category_text . '" for project ' . $project->uid . ' at ' . $project_page_url);
 						}
 						switch(true) {
-							case str_contains($category_text, 'Audio/Video'):
+							// 2007  : `Audio` or `Video`
+							// 2008- : `Audio/Video`
+							case str_contains($category_text, 'Audio'):
+							case str_contains($category_text, 'Video'):
 								$project->category = 'audio-video';
 								break;
-							case str_contains($category_text, 'Web/Words/Games'):
+							// 2007     : `Web/Application`
+							// 2008-2009: `Web/Words`
+							// 2010-    : `Web/Words/Games`
+							case str_contains($category_text, 'Web/'):
 								$project->category = 'web-words-games';
 								break;
-							case str_contains($category_text, 'Installation/Robotic'):
+							// 2007  : `Robotic` or `Installation`
+							// 2008- : `Installation/Robotic`
+							case str_contains($category_text, 'Installation'):
+							case str_contains($category_text, 'Robotic'):
 								$project->category = 'installation-robotic';
 								break;
 							default:
-								throw new Exception('Invalid project category "' . $category_text . '"');
+								throw new Exception('Invalid project category "' . $category_text . '" for project ' . $project->uid . ' at ' . $project_page_url);
 						}
 
 						/**
@@ -414,8 +444,16 @@ class ParserController extends Controller {
 
 						// Probably better not ask why the box has an id of #loginbox not why the table is inside an h1
 						$project_page->filter('#loginbox tr')->each(function(Crawler $node) use($project) {
+							$link_node = $node->filter('a');
+
+							// Some 2007 projects don't have any link at all, but
+							// a message explaining there is no link. We skip these
+							if(!$link_node->count()) {
+								return;
+							}
+
 							$link = new stdClass();
-							$link->url = $node->filter('a')->link()->getUri();
+							$link->url = $link_node->link()->getUri();
 
 							// At this time all links had the same value
 							$link->type = null;
@@ -466,7 +504,7 @@ class ParserController extends Controller {
 							$coach = new stdClass();
 							$coach->name = $coach_text;
 							$coach->role = 'coach';
-							$member->residence = null;
+							$coach->residence = null;
 							$project->members->push($coach);
 						}
 
@@ -489,6 +527,8 @@ class ParserController extends Controller {
 					case 2:
 						$project_page_url = 'http://www.bugnplay.ch/pms/fr/minisite/' . $id . '/';
 						$project_page = new Crawler($this->fetchUrl($project_page_url), 'http://www.bugnplay.ch/');
+
+						$project->url = $project_page_url;
 
 						/**
 						 * Project description
@@ -519,7 +559,7 @@ class ParserController extends Controller {
 								$project->type = 'matu';
 								break;
 							default:
-								throw new Exception('Invalid project type "' . $project_type_text . '"');
+								throw new Exception('Invalid project type "' . $project_type_text . '" for project ' . $project->uid . ' at ' . $project_page_url);
 						}
 
 						/**
@@ -540,7 +580,7 @@ class ParserController extends Controller {
 								$project->category = 'installation-robotic';
 								break;
 							default:
-								throw new Exception('Invalid project category "' . $project_category_text . '"');
+								throw new Exception('Invalid project category "' . $project_category_text . '" for project ' . $project->uid . ' at ' . $project_page_url);
 						}
 
 						/**
@@ -606,7 +646,7 @@ class ParserController extends Controller {
 							// Firstname Lastname (Coach), 1234 Place (CANTON)
 							// Firstname Lastname, 1234 Place (CANTON)
 							if(preg_match('/^(.+?)( \([a-zA-Z]+\))?, ([0-9]+) (.+) \(([A-Z]{2})\)$/', $member_line, $matches) !== 1) {
-								throw new Exception('Invalid member line: "' . $member_line . '"');
+								throw new Exception('Invalid member line: "' . $member_line . '" for project ' . $project->uid . ' at ' . $project_page_url);
 							}
 
 							$member = new \stdClass();
@@ -646,17 +686,17 @@ class ParserController extends Controller {
 	/**
 	 * Handle the request for /, which returns a webpage with the analysis
 	 */
-	public function getParser()
+	public function getParser(Request $request)
 	{
-		return view('parser', ['projects' => $this->parse(true)]);
+		return view('parser', ['projects' => $this->parse($request, true)]);
 	}
 
 	/**
 	 * Handle the request for /projects.json, which returns a pretty-formatted json file
 	 */
-	public function getJson()
+	public function getJson(Request $request)
 	{
-		return response(json_encode($this->parse(), JSON_PRETTY_PRINT), 200, ['Content-Type' => 'application/json']);
+		return response(json_encode($this->parse($request), JSON_PRETTY_PRINT), 200, ['Content-Type' => 'application/json']);
 	}
 
 }
