@@ -42,12 +42,12 @@ Then comes the tricky part. From 2007 to 2013 the projects used the same minisit
 In 2014 the system changed and the projects are now hosted at `www.bugnplay.ch` (This is version `2`).
 But the worst part (for this parser) is that the information available (and most probably the information stored) is not the same:
 
-- In 2007 the project categories were split in 7 categories that are now joined together. This script merges these together when reading 2007 projects
+- In 2007 the projects were split in 7 categories that are now joined together (3 categories in 2008 onwards). This script merges these together when reading 2007 projects
 - In 2007 there was no project `type` attribute so we can't know under which type a project would fall. They get a `type` value of `<null>`
 - From 2007 to 2013 the place were projects member live was not displayed online, so the `residence` attribute gets a value of `<null>`
 
-Minsites for V1 are fetched at `http://projects.bugnplay.ch/bugnplay/library/project.php?project=<id>` and V2 at `http://www.bugnplay.ch/pms/fr/minisite/<id>/`.
-V2 minisite use a javascript-based tabs navigation so every bit of information has already been fetched.
+Minisites for V1 are fetched at `http://projects.bugnplay.ch/bugnplay/library/project.php?project=<id>` and V2 at `http://www.bugnplay.ch/pms/fr/minisite/<id>/`.
+V2 minisites use a javascript-based tab navigation so every bit of information has already been fetched.
 V1 projects require 2 extra queries to fetch *Technologies* and *Sources* tabs.
 
 The main page of the minisite is used to get `url`, `description`, `type`, `category` and `members` data.
@@ -56,7 +56,7 @@ The sidebar contains the `links` and their titles.
 The `technologies` tags are obtained by scanning the *Technologies* and *Sources* tabs for keywords.
 It works for most keywords, but sometimes formatting issues (like extra-galactic non-breaking spaces or invisible UTF-8 characters) prevent them from being read correctly.
 The biggest issue is with people stating that they *don't* use a technology.
-As very few people fall under this case I decided not to do anything special to handle the case.
+As very few people fall under this case I decided not to do anything special to handle it.
 
 ## How to use
 
@@ -81,7 +81,7 @@ You can then use the *save as* option of the browser to save the JSON file to yo
 
 ## Disclaimer
 
-I wrote and used this script in a way that I condider making fair use of the `bugnplay.ch` webservers resources.
+I wrote and used this script in a way that I consider making fair use of the `bugnplay.ch` webservers resources.
 No query was made more that one time (everything is cached), only one query happened at a time (no async) and I didn't fetch all years at once.
 
 **Use it at your own risks !**
