@@ -587,36 +587,50 @@ class ParserController extends Controller {
 						 * Links
 						 */
 						$project->links = new Collection();
-						$project_page->filter('#left h3')->each(function(Crawler $node) use($project) {
-							$link = new stdClass();
-							$link->url = $node->nextAll()->filter('ul a')->link()->getUri();
-
-							$link->type = null;
-							switch($node->text()) {
-								case 'Audio':
-									$link->type = 'audio';
-									break;
-								case 'Video':
-									$link->type = 'video';
-									break;
-								case 'File':
-									$link->type = 'file';
-									break;
-								case 'URL':
-									$link->type = 'website';
-									break;
-							}
-
+						// Most links have a <h3.teaserbox> with their title, an optional description in a <p> under it
+						// followed by a <ul.boxlinks> containing the actual <a>
+						// There are a few special cases:
+						// - Sometimes there are two <a> in the list. We have to take both (even if they have same title/desc)
+						// - Sometimes there is no <a>, but a .copyright_problems message. We ignore these
+						// Note: .teaserbox is required to prevent catching <h3> in .copyright_problems boxes
+						$project_page->filter('#left h3.teaserbox')->each(function(Crawler $node) use($project) {
 							// Get the link title if any
 							// If present, there is a p just after the h3
+							$prefetch_title = null;
 							$next_node = $node->nextAll()->first();
 							if($next_node->nodeName() == 'p') {
-								$link->title = trim($next_node->text());
-							} else {
-								$link->title = null;
+								$prefetch_title = trim($next_node->text());
 							}
 
-							$project->links->push($link);
+							$prefetch_type = null;
+							switch($node->text()) {
+								case 'Audio':
+									$prefetch_type = 'audio';
+									break;
+								case 'Video':
+									$prefetch_type = 'video';
+									break;
+								case 'File':
+									$prefetch_type = 'file';
+									break;
+								case 'URL':
+									$prefetch_type = 'website';
+									break;
+							}
+
+							$node->nextAll()->filter('ul.boxlinks')->first()->filter('a')->each(function(Crawler $link_node) use($project, $prefetch_title, $prefetch_type) {
+								$link        = new stdClass();
+								$link->url   = $link_node->link()->getUri();
+								$link->type  = $prefetch_type;
+								// Sometimes the website link gets itself inside another category
+								// We can correct the type based on the actual link text
+								if(str_contains($link_node->text(), 'View Website')) {
+									$link->type  = 'website';
+								}
+								$link->title = $prefetch_title;
+
+								$project->links->push($link);
+							});
 						});
 
 						$technologies_text = $project_page->filter('#block_technologies .user_content')->text();
